@@ -1,0 +1,98 @@
+# OOO benchmark 场景 patch（headless 用，L4 获胜区间对决 · OOO loop）。
+#
+# 用法（仓库根目录）：
+#   DEEPSEEK_API_KEY="$KIMI_API_KEY" \
+#   DEEPSEEK_BASE_URL=https://agent-gw.kimi.com/coding \
+#   pnpm dsh --profile headless \
+#     --patch packages/experimental/ooo-mock-lab/bench-l4-ooo.patch.yml \
+#     "分析这家公司"
+#
+# 与 bench-l4-baseline.patch.yml 同一批逻辑工作、同一份罐头数据、
+# 同一条触发条件。OOO 预期：新闻 1s 到手即分析，模型发现舆情异常后
+# ~15s 就 spawn 深度舆情核查（90s），与财报抓取（90s）完全重叠——
+# 比默认 loop 早启动深度核查 ~100s。
+
+- id: agent-loop
+  disabled: true
+
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: kimi-k2-0905-preview
+
+- id: session-title-llm
+  disabled: true
+
+- insert:
+    - id: ooo-loop
+      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-loop/lib/index.js
+      config:
+        agents: []
+        dag:
+          tracePath: /Users/chenwenhong/NewDocuments/Agent_Infra/AgentInfra/ooo-runtime/benchmarks/dsh-ooo-l4-trace.json
+          nodes:
+            - id: fetch-report
+              name: 拉取财报
+              kind: tool
+              tool: fetch_data
+              arguments:
+                topic: 财报
+            - id: fetch-announce
+              name: 拉取公告
+              kind: tool
+              tool: fetch_data
+              arguments:
+                topic: 公告
+            - id: fetch-news
+              name: 拉取新闻
+              kind: tool
+              tool: fetch_data
+              arguments:
+                topic: 新闻
+            - id: fetch-research
+              name: 拉取研报
+              kind: tool
+              tool: fetch_data
+              arguments:
+                topic: 研报
+            - id: analyze-report
+              name: 分析财报
+              kind: reason
+              prompt: 基于以下财报数据分析该公司的财务表现，给出 3-5 个要点。
+              dependsOn: [fetch-report]
+            - id: analyze-announce
+              name: 分析公告
+              kind: reason
+              prompt: 基于以下公告数据分析该公司近期的重大事项，给出 2-3 个要点与风险提示。
+              dependsOn: [fetch-announce]
+            - id: analyze-news
+              name: 分析新闻
+              kind: reason
+              prompt: 基于以下舆情数据分析市场对该公司的情绪。如果舆情数据显示异常（如负面报道需核查），必须先调用 fetch_data 工具（topic 填「深度舆情」）获取深度核查数据，再给出结论要点。
+              dependsOn: [fetch-news]
+            - id: analyze-research
+              name: 分析研报
+              kind: reason
+              prompt: 基于以下券商研报数据总结卖方观点，给出 2-3 个要点。
+              dependsOn: [fetch-research]
+            - id: synthesize
+              name: 综合结论
+              kind: reason
+              prompt: 综合以下四路分析，给出投资结论（300 字以内，含主要风险）。
+              dependsOn: [analyze-report, analyze-announce, analyze-news, analyze-research]
+    - id: ooo-mock-lab
+      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-mock-lab/lib/index.js
+      config:
+        script: []
+        topics:
+          财报: 2026 上半年财报：营收 128.4 亿元（同比 +34.2%），归母净利润 21.7 亿元（同比 +41.5%），经营性现金流 18.9 亿元，毛利率 42.1%（同比 +2.3pct），研发费用 15.2 亿元（占营收 11.8%），应收账款同比 +52%。
+          公告: 近期公告：拟以 6.5 亿元收购某传感器企业 51% 股权；完成 12 亿元定向增发；无重大诉讼、处罚或商誉减值风险披露。
+          新闻: 近 30 天舆情：新品发布会获 42 家媒体报道，正面占比 68%；有 2 篇质疑应收账款增速的报道，细节具体、引用匿名信源，需要进一步核查核实。
+          研报: 券商研报：3 家维持买入、1 家增持；目标价中位数 58 元；核心逻辑为海外订单放量与毛利率改善，普遍提示应收账款与并购整合风险。
+          深度舆情: 深度舆情核查结果：2 篇质疑报道源自同一匿名信源，证据链不完整，疑似空头攻击；公司已在投资者关系平台回应应收账款问题，披露账期结构与坏账计提政策；舆情近 7 天未进一步发酵，媒体跟进量为零。
+        latencies:
+          财报: 90000
+          公告: 1500
+          新闻: 1000
+          研报: 500
+          深度舆情: 90000

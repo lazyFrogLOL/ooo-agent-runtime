@@ -1,0 +1,83 @@
+{
+  "startedAt": 1789619203775,
+  "endedAt": 1789619206824,
+  "makespanMs": 3049,
+  "coreBusyMs": 2516,
+  "traces": [
+    {
+      "id": "fetch-research",
+      "name": "拉取研报",
+      "kind": "tool",
+      "startedAt": 1789619203776,
+      "settledAt": 1789619204308
+    },
+    {
+      "id": "fetch-news",
+      "name": "拉取新闻",
+      "kind": "tool",
+      "startedAt": 1789619203776,
+      "settledAt": 1789619204805
+    },
+    {
+      "id": "analyze-research",
+      "name": "分析研报",
+      "kind": "reason",
+      "startedAt": 1789619204308,
+      "settledAt": 1789619204812
+    },
+    {
+      "id": "fetch-announce",
+      "name": "拉取公告",
+      "kind": "tool",
+      "startedAt": 1789619203776,
+      "settledAt": 1789619205305
+    },
+    {
+      "id": "analyze-news",
+      "name": "分析新闻",
+      "kind": "reason",
+      "startedAt": 1789619204812,
+      "settledAt": 1789619205315
+    },
+    {
+      "id": "fetch-report",
+      "name": "拉取财报",
+      "kind": "tool",
+      "startedAt": 1789619203775,
+      "settledAt": 1789619205805
+    },
+    {
+      "id": "analyze-announce",
+      "name": "分析公告",
+      "kind": "reason",
+      "startedAt": 1789619205315,
+      "settledAt": 1789619205818
+    },
+    {
+      "id": "analyze-report",
+      "name": "分析财报",
+      "kind": "reason",
+      "startedAt": 1789619205818,
+      "settledAt": 1789619206321
+    },
+    {
+      "id": "synthesize",
+      "name": "综合结论",
+      "kind": "reason",
+      "startedAt": 1789619206321,
+      "settledAt": 1789619206824
+    }
+  ],
+  "spawned": [],
+  "results": {
+    "fetch-report": "<mock data: 财报, fetched in 2000ms>",
+    "fetch-announce": "<mock data: 公告, fetched in 1500ms>",
+    "fetch-news": "<mock data: 新闻, fetched in 1000ms>",
+    "fetch-research": "<mock data: 研报, fetched in 500ms>",
+    "analyze-report": "财报分析：营收利润双增，现金流健康。",
+    "analyze-announce": "公告分析：近期无重大不利公告。",
+    "analyze-news": "新闻分析：舆情中性偏正面。",
+    "analyze-research": "研报分析：三家券商维持买入评级。",
+    "synthesize": "综合结论：基本面稳健，舆情偏正面，建议关注。"
+  }
+}

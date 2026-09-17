@@ -1,0 +1,41 @@
+# OOO benchmark 场景 patch（headless 用，L4 获胜区间对决 · 默认 loop 基线）。
+#
+# 用法（仓库根目录）：
+#   DEEPSEEK_API_KEY="$KIMI_API_KEY" \
+#   DEEPSEEK_BASE_URL=https://agent-gw.kimi.com/coding \
+#   pnpm dsh --profile headless \
+#     --patch packages/experimental/ooo-mock-lab/bench-l4-baseline.patch.yml \
+#     "请用 fetch_data 工具并行获取「财报」「公告」「新闻」「研报」四路数据（每个 topic 调用一次）；分析时如果舆情数据显示异常（如负面报道需核查），必须再调用 fetch_data 获取「深度舆情」数据核查；最后综合分析给出投资结论。"
+#
+# 地形：财报抓取 90s 慢工具构成 join 屏障；新闻 1s 就到，但默认 loop
+# 的模型要等 join 才能看到新闻、才能发现"需要深度舆情核查"（90s 慢工具）。
+# 深度核查被屏障推迟 ~100s——这是 OOO 要消灭的窗口。
+#
+# 与 bench-l4-ooo.patch.yml 是同一批逻辑工作、同一份罐头数据、同一条
+# 触发条件。计时：scripts/extract-timing.py 解析会话日志。
+
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: kimi-k2-0905-preview
+
+- id: session-title-llm
+  disabled: true
+
+- insert:
+    - id: ooo-mock-lab
+      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-mock-lab/lib/index.js
+      config:
+        script: []
+        topics:
+          财报: 2026 上半年财报：营收 128.4 亿元（同比 +34.2%），归母净利润 21.7 亿元（同比 +41.5%），经营性现金流 18.9 亿元，毛利率 42.1%（同比 +2.3pct），研发费用 15.2 亿元（占营收 11.8%），应收账款同比 +52%。
+          公告: 近期公告：拟以 6.5 亿元收购某传感器企业 51% 股权；完成 12 亿元定向增发；无重大诉讼、处罚或商誉减值风险披露。
+          新闻: 近 30 天舆情：新品发布会获 42 家媒体报道，正面占比 68%；有 2 篇质疑应收账款增速的报道，细节具体、引用匿名信源，需要进一步核查核实。
+          研报: 券商研报：3 家维持买入、1 家增持；目标价中位数 58 元；核心逻辑为海外订单放量与毛利率改善，普遍提示应收账款与并购整合风险。
+          深度舆情: 深度舆情核查结果：2 篇质疑报道源自同一匿名信源，证据链不完整，疑似空头攻击；公司已在投资者关系平台回应应收账款问题，披露账期结构与坏账计提政策；舆情近 7 天未进一步发酵，媒体跟进量为零。
+        latencies:
+          财报: 90000
+          公告: 1500
+          新闻: 1000
+          研报: 500
+          深度舆情: 90000

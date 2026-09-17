@@ -1,0 +1,102 @@
+# OOO benchmark 场景 patch（headless 用，L3 真实模型）。
+#
+# 用法（仓库根目录）：
+#   DEEPSEEK_API_KEY="$KIMI_API_KEY" \
+#   DEEPSEEK_BASE_URL=https://api.moonshot.cn/anthropic \
+#   pnpm dsh --profile headless \
+#     --patch packages/experimental/ooo-mock-lab/bench-l3.patch.yml \
+#     "分析这家公司"
+#
+# 第一次不用脚本：真实模型（Kimi K2，经 Moonshot Anthropic 兼容端点）
+# 在 DAG 的每个 REASON 节点上真实思考，并自己决定要不要 spawn。
+# 工具保持确定性（fetch_data：固定延迟 + 拟真罐头数据），
+# 这样"模型真实、环境确定"，调度行为可复现、可对照。
+#
+# 结构仍是 4 fetch + 4 analyze + synthesize，但"分析财报"的提示词
+# 明确允许模型调用 fetch_data 补查竞争对手——spawn 与否是模型的真实决策。
+
+- id: agent-loop
+  disabled: true
+
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: kimi-k2-0905-preview
+
+- id: session-title-llm
+  disabled: true
+
+- insert:
+    - id: ooo-loop
+      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-loop/lib/index.js
+      config:
+        agents: []
+        dag:
+          tracePath: /Users/chenwenhong/NewDocuments/Agent_Infra/AgentInfra/ooo-runtime/benchmarks/dsh-ooo-l3-trace.json
+          nodes:
+            - id: fetch-report
+              name: 拉取财报
+              kind: tool
+              tool: fetch_data
+              arguments:
+                topic: 财报
+            - id: fetch-announce
+              name: 拉取公告
+              kind: tool
+              tool: fetch_data
+              arguments:
+                topic: 公告
+            - id: fetch-news
+              name: 拉取新闻
+              kind: tool
+              tool: fetch_data
+              arguments:
+                topic: 新闻
+            - id: fetch-research
+              name: 拉取研报
+              kind: tool
+              tool: fetch_data
+              arguments:
+                topic: 研报
+            - id: analyze-report
+              name: 分析财报
+              kind: reason
+              prompt: "基于以下财报数据分析该公司的财务表现。你必须先调用 fetch_data 工具（topic 填「竞争对手」）获取对标数据，再给出 3-5 个要点结论。"
+              dependsOn: [fetch-report]
+            - id: analyze-announce
+              name: 分析公告
+              kind: reason
+              prompt: 基于以下公告数据分析该公司近期的重大事项，给出 2-3 个要点与风险提示。
+              dependsOn: [fetch-announce]
+            - id: analyze-news
+              name: 分析新闻
+              kind: reason
+              prompt: 基于以下舆情数据分析市场对该公司的情绪，给出 2-3 个要点。
+              dependsOn: [fetch-news]
+            - id: analyze-research
+              name: 分析研报
+              kind: reason
+              prompt: 基于以下券商研报数据总结卖方观点，给出 2-3 个要点。
+              dependsOn: [fetch-research]
+            - id: synthesize
+              name: 综合结论
+              kind: reason
+              prompt: 综合以下四路分析，给出投资结论（300 字以内，含主要风险）。
+              dependsOn: [analyze-report, analyze-announce, analyze-news, analyze-research]
+    - id: ooo-mock-lab
+      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-mock-lab/lib/index.js
+      config:
+        # mock 适配器本场景不使用（模型走真实路由），只借用它的工具。
+        script: []
+        topics:
+          财报: 2026 上半年财报：营收 128.4 亿元（同比 +34.2%），归母净利润 21.7 亿元（同比 +41.5%），经营性现金流 18.9 亿元，毛利率 42.1%（同比 +2.3pct），研发费用 15.2 亿元（占营收 11.8%），应收账款同比 +52%。
+          公告: 近期公告：拟以 6.5 亿元收购某传感器企业 51% 股权；完成 12 亿元定向增发；无重大诉讼、处罚或商誉减值风险披露。
+          新闻: 近 30 天舆情：新品发布会获 42 家媒体报道，正面占比 68%；有 2 篇质疑应收账款增速的报道，未形成发酵。
+          研报: 券商研报：3 家维持买入、1 家增持；目标价中位数 58 元；核心逻辑为海外订单放量与毛利率改善，普遍提示应收账款与并购整合风险。
+          竞争对手: 主要竞争对手 2026 上半年：营收 95.1 亿元（同比 +21.0%），净利润 14.2 亿元（同比 +18.3%），毛利率 38.5%，研发投入占比 9.2%。
+        latencies:
+          财报: 2000
+          公告: 1500
+          新闻: 1000
+          研报: 500
+          竞争对手: 800

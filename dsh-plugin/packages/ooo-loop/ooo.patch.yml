@@ -1,0 +1,24 @@
+# OOO loop 开发用 profile patch（M1）。
+#
+# 用法（仓库根目录，先 pnpm install && pnpm run build）：
+#   pnpm dsh web --patch packages/experimental/ooo-loop/ooo.patch.yml
+#
+# 效果：禁用 dsh-base 组合包中的默认 loop（行 id 为 agent-loop，
+# 见 packages/bundle/base/cordis.patch.yml:490）及其 invariant 伴随行，
+# 插入本 fork。主 web profile 不受影响；A/B 对照 = 同一任务分别跑带/不带本 patch。
+#
+# 注意 1：AgentRegistry.setFactory() 全局只允许一个 factory
+# （core/agent/src/index.ts），因此新旧两行必须互斥，不能同时启用。
+#
+# 注意 2：name 目前用绝对路径指向构建产物。因为本包还不是任何
+# workspace 依赖链的成员，裸包名无法从 harness 的 node_modules 解析；
+# 将来打包发布为 bundle 后改回包名 '@deepseek-ai/dsh-ooo-loop' 即可。
+
+- id: agent-loop
+  disabled: true
+
+- insert:
+    - id: ooo-loop
+      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-loop/lib/index.js
+      config:
+        agents: []

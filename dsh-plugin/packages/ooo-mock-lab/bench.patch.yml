@@ -1,0 +1,53 @@
+# OOO benchmark 场景 patch（headless 用，默认 loop 基线）。
+#
+# 用法（仓库根目录）：
+#   time pnpm dsh --profile headless \
+#     --patch packages/experimental/ooo-mock-lab/bench.patch.yml \
+#     "分析这家公司"
+#
+# 场景（与 bench-ooo.patch.yml 的 DAG 是同一批逻辑工作）：
+#   模型"思考" 500ms → 并行发起 4 个 mock_fetch（财报 2000 / 公告 1500 /
+#   新闻 1000 / 研报 500ms）→ join 屏障等最慢的 2000ms → 模型一次性完成
+#   4 个分析 + 综合（单请求 thinkMs 2500，代表 5×500ms 的串行模型工作量）。
+#
+# 默认 loop 预期 makespan ≈ 500 + 2000 + 2500 = 5000ms（+启动开销）。
+# 这是 bench-ooo.patch.yml（OOO loop）的对照基线。
+
+- id: agent-default-model
+  config:
+    provider: mock
+    model: mock-1
+
+# 辅助模型消费者（会话标题）会与 agent loop 共享同一 mock 适配器，
+# 会消耗脚本条目、污染 benchmark 的确定性，禁用。
+- id: session-title-llm
+  disabled: true
+
+- insert:
+    - id: ooo-mock-lab
+      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-mock-lab/lib/index.js
+      config:
+        provider: mock
+        thinkMs: 500
+        script:
+          - toolCalls:
+              - name: mock_fetch
+                arguments:
+                  topic: 财报
+                  latencyMs: 2000
+              - name: mock_fetch
+                arguments:
+                  topic: 公告
+                  latencyMs: 1500
+              - name: mock_fetch
+                arguments:
+                  topic: 新闻
+                  latencyMs: 1000
+              - name: mock_fetch
+                arguments:
+                  topic: 研报
+                  latencyMs: 500
+          # 第二轮：join 屏障之后模型才有全部数据，4 个分析 + 综合只能在
+          # 这一次请求里串行完成，用 2500ms 代表 5×500ms 的模型工作量。
+          - thinkMs: 2500
+            text: 四路数据已拿齐：财报、公告、新闻、研报逐项分析并综合完成。

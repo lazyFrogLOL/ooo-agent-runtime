@@ -1,0 +1,7 @@
+# Python / 构建产物
+__pycache__/
+*.pyc
+node_modules/
+lib/
+*.tsbuildinfo
+.DS_Store

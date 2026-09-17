@@ -1,0 +1,102 @@
+{
+  "startedAt": 1789619143376,
+  "endedAt": 1789619147730,
+  "makespanMs": 4354,
+  "coreBusyMs": 3014,
+  "traces": [
+    {
+      "id": "fetch-research",
+      "name": "拉取研报",
+      "kind": "tool",
+      "startedAt": 1789619143377,
+      "settledAt": 1789619143912
+    },
+    {
+      "id": "fetch-news",
+      "name": "拉取新闻",
+      "kind": "tool",
+      "startedAt": 1789619143377,
+      "settledAt": 1789619144409
+    },
+    {
+      "id": "analyze-research",
+      "name": "分析研报",
+      "kind": "reason",
+      "startedAt": 1789619143912,
+      "settledAt": 1789619144415
+    },
+    {
+      "id": "fetch-announce",
+      "name": "拉取公告",
+      "kind": "tool",
+      "startedAt": 1789619143377,
+      "settledAt": 1789619144909
+    },
+    {
+      "id": "analyze-news",
+      "name": "分析新闻",
+      "kind": "reason",
+      "startedAt": 1789619144415,
+      "settledAt": 1789619144917
+    },
+    {
+      "id": "fetch-report",
+      "name": "拉取财报",
+      "kind": "tool",
+      "startedAt": 1789619143376,
+      "settledAt": 1789619145410
+    },
+    {
+      "id": "analyze-announce",
+      "name": "分析公告",
+      "kind": "reason",
+      "startedAt": 1789619144917,
+      "settledAt": 1789619145419
+    },
+    {
+      "id": "analyze-report",
+      "name": "分析财报",
+      "kind": "reason",
+      "startedAt": 1789619145419,
+      "settledAt": 1789619145922
+    },
+    {
+      "id": "analyze-report-call-0",
+      "name": "分析财报→mock_fetch",
+      "kind": "tool",
+      "startedAt": 1789619145922,
+      "settledAt": 1789619146725
+    },
+    {
+      "id": "analyze-report-cont",
+      "name": "继续分析财报",
+      "kind": "reason",
+      "startedAt": 1789619146725,
+      "settledAt": 1789619147227
+    },
+    {
+      "id": "synthesize",
+      "name": "综合结论",
+      "kind": "reason",
+      "startedAt": 1789619147227,
+      "settledAt": 1789619147729
+    }
+  ],
+  "spawned": [
+    "analyze-report -> analyze-report-call-0",
+    "analyze-report -> analyze-report-cont"
+  ],
+  "results": {
+    "fetch-report": "<mock data: 财报, fetched in 2000ms>",
+    "fetch-announce": "<mock data: 公告, fetched in 1500ms>",
+    "fetch-news": "<mock data: 新闻, fetched in 1000ms>",
+    "fetch-research": "<mock data: 研报, fetched in 500ms>",
+    "analyze-report": "财报初步分析：营收利润双增；但增速是否领先需要竞争对手数据佐证。",
+    "analyze-announce": "公告分析：近期无重大不利公告。",
+    "analyze-news": "新闻分析：舆情中性偏正面。",
+    "analyze-research": "研报分析：三家券商维持买入评级。",
+    "synthesize": "综合结论：基本面稳健，增速领先竞争对手，建议关注。",
+    "analyze-report-call-0": "<mock data: 竞争对手财报, fetched in 800ms>",
+    "analyze-report-cont": "财报分析（含竞争对手对标）：营收利润双增，增速领先对手 30%。"
+  }
+}

@@ -1,0 +1,120 @@
+# OOO benchmark 场景 patch（headless 用，M2 spawn 动态发现）。
+#
+# 用法（仓库根目录）：
+#   time pnpm dsh --profile headless \
+#     --patch packages/experimental/ooo-mock-lab/bench-spawn.patch.yml \
+#     "分析这家公司"
+#
+# 在 bench-ooo.patch.yml 的 9 节点静态 DAG 之上，"分析财报" 的模型响应
+# 带一个 tool call（mock_fetch 竞争对手 800ms）——DAG 驱动把它动态展开为：
+#   analyze-report-call-0（TOOL，竞争对手财报 800ms）
+#   analyze-report-cont（REASON 续跑，依赖 analyze-report + call-0）
+# 并且 synthesize 对 analyze-report 的依赖被 reroute 到 cont 上
+# （否则综合会在竞争对手数据回来之前就开跑——这是 spawn 语义的核心正确性点）。
+#
+# 预期时间线：
+#   t≈0    4 个 fetch 并发派发
+#   500    研报到 → 分析研报上核（500-1000），之后新闻/公告分析依次排满核心
+#   2000   财报到 → 分析财报（2000-2500）→ spawn 竞争对手抓取（2500-3300）
+#   2500   核心空闲（唯一一段 idle，等待动态发现的工具结果）
+#   3300   续跑分析财报（3300-3800）
+#   3800   综合结论（3800-4300）
+# 预期 makespan ≈ 4300ms，图从 9 节点长到 11 节点。
+# 对照：默认 loop 下同等动态发现 = 500+2000+500+800+500+500 = 4800ms。
+
+- id: agent-loop
+  disabled: true
+
+- id: agent-default-model
+  config:
+    provider: mock
+    model: mock-1
+
+- id: session-title-llm
+  disabled: true
+
+- insert:
+    - id: ooo-loop
+      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-loop/lib/index.js
+      config:
+        agents: []
+        dag:
+          tracePath: /Users/chenwenhong/NewDocuments/Agent_Infra/AgentInfra/ooo-runtime/benchmarks/dsh-ooo-spawn-trace.json
+          nodes:
+            - id: fetch-report
+              name: 拉取财报
+              kind: tool
+              tool: mock_fetch
+              arguments:
+                topic: 财报
+                latencyMs: 2000
+            - id: fetch-announce
+              name: 拉取公告
+              kind: tool
+              tool: mock_fetch
+              arguments:
+                topic: 公告
+                latencyMs: 1500
+            - id: fetch-news
+              name: 拉取新闻
+              kind: tool
+              tool: mock_fetch
+              arguments:
+                topic: 新闻
+                latencyMs: 1000
+            - id: fetch-research
+              name: 拉取研报
+              kind: tool
+              tool: mock_fetch
+              arguments:
+                topic: 研报
+                latencyMs: 500
+            - id: analyze-report
+              name: 分析财报
+              kind: reason
+              prompt: 分析财报数据，给出要点。
+              dependsOn: [fetch-report]
+            - id: analyze-announce
+              name: 分析公告
+              kind: reason
+              prompt: 分析公告内容，给出要点。
+              dependsOn: [fetch-announce]
+            - id: analyze-news
+              name: 分析新闻
+              kind: reason
+              prompt: 分析新闻舆情，给出要点。
+              dependsOn: [fetch-news]
+            - id: analyze-research
+              name: 分析研报
+              kind: reason
+              prompt: 分析研报观点，给出要点。
+              dependsOn: [fetch-research]
+            - id: synthesize
+              name: 综合结论
+              kind: reason
+              prompt: 综合以上四路分析，给出投资结论。
+              dependsOn: [analyze-report, analyze-announce, analyze-news, analyze-research]
+    - id: ooo-mock-lab
+      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-mock-lab/lib/index.js
+      config:
+        provider: mock
+        thinkMs: 500
+        script:
+          # 更具体的 match 放前面；已消费的条目不会再次命中。
+          - match: 继续分析财报
+            text: 财报分析（含竞争对手对标）：营收利润双增，增速领先对手 30%。
+          - match: 分析财报
+            text: 财报初步分析：营收利润双增；但增速是否领先需要竞争对手数据佐证。
+            toolCalls:
+              - name: mock_fetch
+                arguments:
+                  topic: 竞争对手财报
+                  latencyMs: 800
+          - match: 分析公告
+            text: 公告分析：近期无重大不利公告。
+          - match: 分析新闻
+            text: 新闻分析：舆情中性偏正面。
+          - match: 分析研报
+            text: 研报分析：三家券商维持买入评级。
+          - match: 综合结论
+            text: 综合结论：基本面稳健，增速领先竞争对手，建议关注。
