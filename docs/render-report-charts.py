@@ -9,13 +9,25 @@ import json
 from pathlib import Path
 
 import sys
-sys.path.insert(0, str(Path(sys.executable).parent.parent.parent))
-from daimon_runtime import setup_plot
-setup_plot()
+
+try:
+    # Kimi Work 托管运行时：内置 CJK 字体配置
+    sys.path.insert(0, str(Path(sys.executable).parent.parent.parent))
+    from daimon_runtime import setup_plot
+
+    setup_plot()
+except ImportError:
+    # 通用环境：直接用 matplotlib 配置常见 CJK 字体
+    import matplotlib
+
+    matplotlib.rcParams["font.sans-serif"] = [
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "sans-serif",
+    ]
+    matplotlib.rcParams["axes.unicode_minus"] = False
 
 import matplotlib.pyplot as plt
 
-ROOT = Path('/Users/chenwenhong/NewDocuments/Agent_Infra/AgentInfra/ooo-runtime')
+ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / 'docs' / 'assets'
 OUT.mkdir(parents=True, exist_ok=True)
 

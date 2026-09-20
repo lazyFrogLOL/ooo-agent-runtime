@@ -25,7 +25,7 @@
 
 - insert:
     - id: ooo-mock-lab
-      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-mock-lab/lib/index.js
+      name: "@deepseek-ai/dsh-ooo-mock-lab"
       config:
         # 只借用工具；模型走真实路由。
         script: []

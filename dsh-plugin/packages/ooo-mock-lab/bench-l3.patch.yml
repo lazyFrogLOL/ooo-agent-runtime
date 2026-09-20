@@ -28,11 +28,11 @@
 
 - insert:
     - id: ooo-loop
-      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-loop/lib/index.js
+      name: "@deepseek-ai/dsh-ooo-loop"
       config:
         agents: []
         dag:
-          tracePath: /Users/chenwenhong/NewDocuments/Agent_Infra/AgentInfra/ooo-runtime/benchmarks/dsh-ooo-l3-trace.json
+          tracePath: dsh-ooo-l3-trace.json
           nodes:
             - id: fetch-report
               name: 拉取财报
@@ -84,7 +84,7 @@
               prompt: 综合以下四路分析，给出投资结论（300 字以内，含主要风险）。
               dependsOn: [analyze-report, analyze-announce, analyze-news, analyze-research]
     - id: ooo-mock-lab
-      name: /Users/chenwenhong/NewDocuments/Agent_Infra/deepseek-harness/packages/experimental/ooo-mock-lab/lib/index.js
+      name: "@deepseek-ai/dsh-ooo-mock-lab"
       config:
         # mock 适配器本场景不使用（模型走真实路由），只借用它的工具。
         script: []

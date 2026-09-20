@@ -2,7 +2,7 @@
  * Concrete agent-loop plugin: creates scoped ReactLoopAgents, publishes them
  * through the agent/session registries, and owns their ordered teardown.
  *
- * @module @deepseek-ai/dsh-agent-loop
+ * @module @deepseek-ai/dsh-ooo-loop
  */
 
 import { Context, FiberState, Service } from '@deepseek-ai/cordis'

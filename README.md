@@ -14,10 +14,14 @@
 
 ```
 ├── ooo_runtime/  examples/  benchmarks/   # Python v0.1 原型（三分钟看懂想法）
-├── docs/                                  # 设计文档 + 技术报告 + 甘特图
+├── docs/                                  # 设计总览（单一权威入口）+ 设计文档
+                                           # + 技术报告 + 评审/竞品文档 + 甘特图
 └── dsh-plugin/                            # dsh 插件包快照（ooo-loop + ooo-mock-lab）
                                            # 及宿主集成 patch、复现步骤
 ```
+
+**读这份就够了**：[docs/OOO-Agent-Runtime-设计总览.md](docs/OOO-Agent-Runtime-设计总览.md)——
+问题、核心设计、两条实现线、实验结论、外部定位、已知缺陷、路线图，一份文档串完。
 
 两条实现线：Python 原型验证想法（三模式对照 59s/45s/36s）；
 dsh 插件线把它做成真实框架里的可替换 agent loop（fork agent-loop + profile patch

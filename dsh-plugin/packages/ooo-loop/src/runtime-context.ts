@@ -2,7 +2,7 @@
  * Durable projection state for the two loop-owned surface messages the system
  * prompt plugin forms: the system prompt (surface node 0 and any in-history
  * replacement) and the dynamic runtime-context snapshot.
- * @module @deepseek-ai/dsh-agent-loop/runtime-context
+ * @module @deepseek-ai/dsh-ooo-loop/runtime-context
  */
 
 import { createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'

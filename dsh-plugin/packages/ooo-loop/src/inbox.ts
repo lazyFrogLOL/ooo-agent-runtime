@@ -1,7 +1,7 @@
 /**
  * Driver-owned durable agent inbox projection and command facade.
  *
- * @module @deepseek-ai/dsh-agent-loop/inbox
+ * @module @deepseek-ai/dsh-ooo-loop/inbox
  */
 
 import type { MessageId } from '@deepseek-ai/dsh-llm'
