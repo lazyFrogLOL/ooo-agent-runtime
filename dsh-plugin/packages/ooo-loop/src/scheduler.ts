@@ -1,24 +1,15 @@
 /**
- * Out-of-Order DAG scheduler (M1 placeholder).
+ * Dependency-driven dynamic DAG scheduler.
  *
  * Ported from the Python v0.1 prototype (`ooo_runtime/core.py`). This module is
  * deliberately standalone: it knows nothing about dsh sessions, models, or
  * tools. The caller injects two executors — one for REASON nodes (a model
  * request, serialized on the single agent core) and one for TOOL nodes
- * (background I/O, unbounded concurrency) — and the scheduler drives the
+ * (bounded background I/O) — and the scheduler drives the
  * dynamic task graph to completion in dependency order.
  *
- * M1 wiring plan: `ReactLoopAgent`'s serial turn/step pump calls into
- * `runOutOfOrder()` with executors bound to `ctx.llm` / `ctx.tools`; until
- * that wiring lands this module is exported but unused by the driver.
- *
- * CPU analogy:
- *   instruction         -> OooNode
- *   register dependency -> dependsOn
- *   reservation station -> TaskGraph.ready()
- *   cache miss          -> slow TOOL node
- *   single core         -> REASON semaphore (1)
- *   retirement          -> commit gate for IRREVERSIBLE nodes
+ * Exclusive tools do not overlap other tools; reasoning has its own slot.
+ * This is an execution barrier, not ordered retirement or rollback of effects.
  *
  * @module dsh-ooo-loop/scheduler
  */
@@ -27,11 +18,12 @@
 export type NodeKind = 'reason' | 'tool'
 
 /**
- * Effect classification for the commit barrier. IRREVERSIBLE nodes (external
- * side effects) may only dispatch once every dependency has settled.
+ * Effect classification. IRREVERSIBLE tools always use the exclusive lane.
+ * Every node requires successful dependencies before dispatch.
  */
 export type EffectClass = 'pure' | 'idempotent' | 'irreversible'
 
+/** Pending means never started, including nodes left behind on failure/abort. */
 export type NodeStatus = 'pending' | 'running' | 'done' | 'failed'
 
 /** One schedulable unit of agent work. */
@@ -58,7 +50,7 @@ export interface OooNode<R = unknown> {
   error?: unknown
 }
 
-/** Executors binding the scheduler to real work. Must not throw synchronously. */
+/** Executors binding the scheduler to real work; synchronous throws are caught. */
 export interface NodeExecutors<R = unknown> {
   /** Runs a REASON node; the scheduler serializes these on the agent core. */
   readonly runReason: (node: OooNode<R>) => Promise<R>
@@ -165,33 +157,46 @@ export class TaskGraph<R = unknown> {
 }
 
 /**
- * Commit barrier: out-of-order execution, in-order retirement. An IRREVERSIBLE
- * node must never dispatch while any dependency is unsettled. The READY scan
- * already guarantees dependency completion, so this is a defense-in-depth
- * assertion at the dispatch site; write_set conflict detection is M3 work.
+ * Defense-in-depth dependency assertion for irreversible effects. This does
+ * not validate external state, undo effects, or provide a reorder buffer.
  */
-function assertCommitGate<R>(graph: TaskGraph<R>, node: OooNode<R>): void {
+function assertEffectDependencies<R>(graph: TaskGraph<R>, node: OooNode<R>): void {
   if (node.effect !== 'irreversible') return
   const unsettled = (node.dependsOn ?? []).filter(dep => graph.get(dep).status !== 'done')
   if (unsettled.length > 0) {
-    throw new Error(`commit gate rejected ${node.name}: unsettled deps [${unsettled.join(', ')}]`)
+    throw new Error(`effect dependency gate rejected ${node.name}: unsettled deps [${unsettled.join(', ')}]`)
   }
 }
 
 /**
  * Event-driven out-of-order scheduler.
  *
- * Loop invariant: dispatch every READY node immediately (REASON nodes through
- * a single-slot core, TOOL nodes unbounded), then wait for the next
- * completion event, rescan, repeat. The agent core never idles while a REASON
- * node is READY — that is the entire point of the design.
+ * Admit READY work only when its execution slot is available. A waiting
+ * exclusive tool prevents later READY tools from bypassing it, while reasoning
+ * can continue. Classification is re-read on each admission scan.
+ * Failure/abort stops admission and drains only work already started. Executors
+ * must cooperate with cancellation themselves; an unending executor delays drain.
  */
 export async function runOutOfOrder<R>(
   graph: TaskGraph<R>,
   executors: NodeExecutors<R>,
+  options: {
+    signal?: AbortSignal
+    /** Positive integer; defaults to 10. Does not count the reasoning slot. */
+    maxParallelTools?: number
+    /** Synchronous current policy, defaults to parallel; irreversible wins. */
+    toolMode?: (node: OooNode<R>) => 'parallel' | 'exclusive'
+  } = {},
 ): Promise<ScheduleOutcome> {
+  options.signal?.throwIfAborted()
   const traces: NodeTrace[] = []
-  let coreChain: Promise<void> = Promise.resolve()
+  let reasonRunning = false
+  let toolsRunning = 0
+  let exclusiveRunning = false
+  const maxParallelTools = options.maxParallelTools ?? 10
+  if (!Number.isInteger(maxParallelTools) || maxParallelTools <= 0) {
+    throw new RangeError('maxParallelTools must be a positive integer')
+  }
   const inflight = new Set<Promise<void>>()
 
   // Total by construction: never rejects, so no detached run can trigger an
@@ -219,34 +224,61 @@ export async function runOutOfOrder<R>(
     void run.finally(() => inflight.delete(run))
   }
 
-  const dispatch = (node: OooNode<R>): void => {
-    assertCommitGate(graph, node)
+  const dispatch = (node: OooNode<R>, exclusive = false): void => {
+    assertEffectDependencies(graph, node)
     node.status = 'running'
     if (node.kind === 'reason') {
-      // Serialize REASON nodes on the single agent core, FIFO by dispatch order.
-      const run = coreChain.then(() => exec(node))
-      coreChain = run
+      reasonRunning = true
+      const run = exec(node).finally(() => { reasonRunning = false })
       track(run)
     } else {
-      track(exec(node))
+      toolsRunning++
+      exclusiveRunning = exclusive
+      track(exec(node).finally(() => {
+        toolsRunning--
+        if (exclusive) exclusiveRunning = false
+      }))
     }
   }
 
   const firstFailure = (): OooNode<R> | undefined => graph.firstFailure()
 
-  while (!graph.isDone()) {
-    for (const node of graph.ready()) dispatch(node)
-    const failed = firstFailure()
-    if (failed !== undefined) {
-      // Fail fast, but drain started work before surfacing the error.
-      await Promise.all([...inflight])
-      throw new Error(`node ${failed.name} failed: ${String(failed.error)}`)
+  try {
+    while (true) {
+      options.signal?.throwIfAborted()
+      const failed = firstFailure()
+      if (failed !== undefined) {
+        throw new Error(`node ${failed.name} failed: ${String(failed.error)}`)
+      }
+      if (graph.isDone()) break
+      let exclusiveWaiting = false
+      for (const node of graph.ready()) {
+        if (options.signal?.aborted || firstFailure() !== undefined) break
+        if (node.kind === 'reason' && reasonRunning) continue
+        if (node.kind === 'tool') {
+          if (exclusiveRunning || exclusiveWaiting) continue
+          const exclusive = node.effect === 'irreversible' || options.toolMode?.(node) === 'exclusive'
+          if (exclusive && toolsRunning > 0) {
+            exclusiveWaiting = true
+            continue
+          }
+          if (toolsRunning >= maxParallelTools) continue
+          if (options.signal?.aborted || firstFailure() !== undefined) break
+          dispatch(node, exclusive)
+        } else {
+          dispatch(node)
+        }
+      }
+      if (options.signal?.aborted || firstFailure() !== undefined) continue
+      if (inflight.size === 0) {
+        throw new Error(`scheduler deadlock: unfinished nodes [${graph.unfinished().join(', ')}]`)
+      }
+      // Wake on the first completion anywhere, then rescan the whole graph.
+      await Promise.race(inflight)
     }
-    if (inflight.size === 0) {
-      throw new Error(`scheduler deadlock: unfinished nodes [${graph.unfinished().join(', ')}]`)
-    }
-    // Wake on the first completion anywhere, then rescan the whole graph.
-    await Promise.race(inflight)
+  } finally {
+    // All exit paths drain only admitted work, including admission-policy errors.
+    await Promise.all([...inflight])
   }
   return { traces, spawned: graph.spawned }
 }

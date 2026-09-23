@@ -125,7 +125,9 @@ prompt、上下文不同，无配对重复与置信区间），不是通用加�
 
 ## 4. 已知缺陷（源码审查 P1/P2，按优先级）
 
-审查全文见 [ooo-agent-runtime-review.md](ooo-agent-runtime-review.md)。以下为摘要：
+审查全文见 [ooo-agent-runtime-review.md](ooo-agent-runtime-review.md)。以下保留原始发现，便于追踪。
+
+**本轮加固状态**：第 1、2、3 项，以及第 5 项的结构化工具错误和参数校验、第 6 项的取消派发与结束状态检查已修复，并补充回归测试。工具并发上限已接入；深度/token 预算、超时排空仍未实现。第 4 项以及 `additionalContexts` / `concludesTurn` 传播仍未解决。合入远端修复后，28 个测试文件、468 个测试全部通过，源码 TypeScript 构建通过；这不是完整 Loader/真实模型端到端验证。详见 [OOO-安全加固.md](OOO-安全加固.md)。
 
 **P1（安全与一致性，开源前必修）**
 

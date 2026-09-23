@@ -295,51 +295,66 @@ export class ReactLoopAgent implements Agent {
       // entering the conversational step loop. The turn boundary events still
       // come from the shared try/finally, so the session log stays canonical.
       if (turn === 1 && this.dag !== undefined) {
+        signal.throwIfAborted()
+        // The input triggers the configured graph; it is not a planner prompt.
+        // Claim it durably so it cannot be replayed as a later conversational turn.
+        const messages = this.inbox.claim('next-turn', turn)
+        signal.throwIfAborted()
+        if (messages.length === 0) {
+          turnEnds = { kind: 'completed' }
+          return false
+        }
+        for (const message of messages) {
+          this.session.append('user/message', message, { surfaceOp: 'append' })
+          signal.throwIfAborted()
+        }
         await runDagTurn({
           ctx: this.loopCtx,
           dag: this.dag,
           provider: this.options.provider ?? '',
           model: this.options.model ?? '',
           signal,
+          maxParallelTools: this.loopCtx.agentLoop.config.maxParallelToolCalls,
         })
+        signal.throwIfAborted()
         turnEnds = { kind: 'completed' }
-        return false
-      }
-      while (true) {
-        signal.throwIfAborted()
-        const step = phase.step + 1
-        const decision = await this.preStep(target, { turn, step })
-        if (decision.kind === 'reject') {
-          turnEnds = { kind: 'blocked' }
-          return false
-        }
-        if (turnEnds && decision.messages.length === 0) break
-        // A removed waking message or an enter decision rewritten to empty
-        // still owns the initial turn boundary, but it spends no model call.
-        if (phase.step === 0 && decision.messages.length === 0) {
-          turnEnds = { kind: 'completed' }
-          return false
-        }
-        signal.throwIfAborted()
-        this.session.append('step/start', { turn, step })
-        phase.step = step
-        try {
-          // max-tokens is sticky: once any step hits the ceiling, later steps
-          // that complete normally must not downgrade the turn outcome.
-          const stepEnd = await this.step(decision)
-          // max-tokens stays sticky: a later completed step must not
-          // downgrade the turn outcome.
-          if (turnEnds === null || turnEnds.kind !== 'max-tokens') turnEnds = stepEnd
-        } finally {
-          this.session.append('step/end', { turn, step })
-        }
-        signal.throwIfAborted()
-        if (turnEnds && this.inbox.nextStep.length === 0) {
-          await this.dispatch.serial('agent/turn-stopping', { turn, signal })
+      } else {
+        while (true) {
           signal.throwIfAborted()
+          const step = phase.step + 1
+          const decision = await this.preStep(target, { turn, step })
+          if (decision.kind === 'reject') {
+            turnEnds = { kind: 'blocked' }
+            return false
+          }
+          if (turnEnds && decision.messages.length === 0) break
+          // A removed waking message or an enter decision rewritten to empty
+          // still owns the initial turn boundary, but it spends no model call.
+          if (phase.step === 0 && decision.messages.length === 0) {
+            turnEnds = { kind: 'completed' }
+            return false
+          }
+          signal.throwIfAborted()
+          this.session.append('step/start', { turn, step })
+          phase.step = step
+          try {
+            // max-tokens is sticky: once any step hits the ceiling, later steps
+            // that complete normally must not downgrade the turn outcome.
+            const stepEnd = await this.step(decision)
+            // max-tokens stays sticky: a later completed step must not
+            // downgrade the turn outcome.
+            if (turnEnds === null || turnEnds.kind !== 'max-tokens') turnEnds = stepEnd
+          } finally {
+            this.session.append('step/end', { turn, step })
+          }
+          signal.throwIfAborted()
+          if (turnEnds && this.inbox.nextStep.length === 0) {
+            await this.dispatch.serial('agent/turn-stopping', { turn, signal })
+            signal.throwIfAborted()
+          }
+          if (turnEnds && this.inbox.nextStep.length === 0) break
+          target = 'next-step'
         }
-        if (turnEnds && this.inbox.nextStep.length === 0) break
-        target = 'next-step'
       }
     } catch (error: unknown) {
       if (signal.aborted) {

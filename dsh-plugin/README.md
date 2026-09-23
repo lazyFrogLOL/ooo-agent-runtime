@@ -5,7 +5,7 @@
 - `packages/ooo-loop/` — OOO agent loop（fork 自 `@deepseek-ai/dsh-agent-loop` 0d1f50007f）。
   新增：`src/scheduler.ts`（事件驱动乱序调度器）、`src/dag.ts`（静态 DAG 驱动路径 +
   spawn 动态发现 + 依赖改道 + 祖先锥上下文注入）、`agent.ts`/`index.ts` 的挂钩。
-  fork 的完整测试套件保留在 `tests/`。
+  fork 的测试套件保留在 `tests/`，并增加 scheduler/DAG/inbox 回归测试。当前行为与限制见[包说明](packages/ooo-loop/README.zh.md)，本轮变更见[正确性加固](../docs/OOO-安全加固.md)。
 - `packages/ooo-mock-lab/` — 确定性验证实验室：脚本化 mock LLM 适配器
   （顺序回放 / `match` 内容路由 / 每条响应独立 `thinkMs`）+ 定时工具
   （`mock_fetch` / 拟真 `fetch_data`，延迟来自 config）+ 8 个场景 patch。
@@ -41,6 +41,17 @@ pnpm dsh --profile headless \
 python3 packages/experimental/ooo-mock-lab/scripts/extract-timing.py
 # OOO 侧 trace 路径在各 patch 的 dag.tracePath 里（当前指向开发机绝对路径，按需修改）
 ```
+
+## 验证本 fork
+
+在固定版本、已安装依赖的临时宿主中运行（不需要 API key）：
+
+```bash
+pnpm exec vitest run --config packages/experimental/ooo-loop/vitest.config.ts --maxWorkers 2
+node ./node_modules/typescript/bin/tsc --build packages/experimental/ooo-loop --pretty false
+```
+
+必须使用包级配置：宿主 testkit 会间接导入原 loop，该配置将其统一映射到本 fork。仅运行宿主默认测试不能证明 OOO 路径正确；`.e2e.ts` 真实提供方测试不在这个命令内。
 
 ## 场景 patch 一览
 

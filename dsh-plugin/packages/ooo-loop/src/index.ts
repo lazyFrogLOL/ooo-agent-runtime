@@ -249,9 +249,7 @@ declare module '@deepseek-ai/cordis' {
 
 export { DEFAULT_MAX_PARALLEL_TOOL_CALLS }
 
-// OOO extension (M1 placeholder): the event-driven DAG scheduler is exported
-// for wiring into the driver in a later milestone; the forked ReactLoopAgent
-// does not call it yet.
+// The configured first-turn DAG and direct consumers share this scheduler.
 export * from './scheduler.ts'
 
 /**

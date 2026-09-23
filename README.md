@@ -1,12 +1,12 @@
 # OOO Agent Runtime
 
-> Dependency-aware、effect-safe 的 Out-of-Order Agent Runtime。
+> Dependency-aware 的实验性 Out-of-Order Agent Runtime。副作用隔离与持久恢复尚未完成。
 >
 > 核心命题：传统 Agent 是一条同步阻塞的思维链（`LLM → tool → WAIT → LLM`）；
 > 本 runtime 把 Agent 改成**事件驱动的任务调度器**——慢工具 pending 期间，
 > agent core 继续消费 READY 任务，结果以事件形式回来后唤醒依赖节点。
 
-**核心结论（真实模型双向实证）**：OOO 的收益不来自"并行"，来自**提前决策**——
+**场景观测（历史真实模型对照，非通用性能保证）**：OOO 的收益不只来自同批并行，还来自**提前决策、提前派发后继工作**——
 慢工具 + 发现式慢 follow-up 地形下快 27.5%（1.38×）；工作可折叠进一次调用的
 地形下反而慢 28%（调用开销经济学）。详见[技术报告](docs/OOO-Agent-Runtime-技术报告.md)。
 
@@ -44,6 +44,8 @@ dsh 插件线把它做成真实框架里的可替换 agent loop（fork agent-loo
 副作用隔离、验证提交、取消与 durable recovery 统一起来。本仓库是这个方向的
 可运行最小骨架：先覆盖「动态 DAG + 事件驱动乱序调度 + 提交屏障」，
 推测执行与 durable recovery 留作 roadmap。
+
+DSH 插件已补充失败/取消停止派发、工具独占与并发限制、严格模型参数/结束状态、首轮 inbox 收敛及专门回归测试。当前依然是首轮配置 DAG 实验，不具备完整请求历史或安全事务提交，详见[插件说明](dsh-plugin/packages/ooo-loop/README.zh.md)。
 
 ## CPU 类比映射
 
@@ -114,7 +116,7 @@ ooo-runtime/
 - [x] 动态任务图 + READY 扫描调度
 - [x] REASON/TOOL 双类资源模型（agent core 单线程，工具后台并发）
 - [x] 运行时动态依赖发现（`spawn`）
-- [x] `effect_class` 元数据 + 不可逆操作提交屏障（乱序执行、按序提交）
+- [x] `effect_class` 元数据 + 不可逆操作的依赖就绪门禁（不保证全局按序提交）
 - [x] 三模式对照 benchmark：makespan / 利用率 / 工具冻结时间 / 执行轨迹
 
 Roadmap（对应调研中的缺口）：

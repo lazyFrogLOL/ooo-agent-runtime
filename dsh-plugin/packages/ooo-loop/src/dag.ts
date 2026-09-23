@@ -21,7 +21,7 @@
 import { writeFile } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm'
-import { TOOL_RUNTIME_SCHEDULER, type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import { TOOL_RUNTIME_SCHEDULER, type ToolExecutionInput, type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { z } from 'zod'
 import { runOutOfOrder, TaskGraph, type NodeTrace, type OooNode } from './scheduler.ts'
 
@@ -79,17 +79,22 @@ export interface DagTraceFile {
   readonly results: Record<string, string>
 }
 
-/** Execute one TOOL node through the real tool runtime pipeline. */
-async function runToolNode(ctx: Context, config: DagNodeConfig, signal: AbortSignal): Promise<string> {
+/** Build the same explicit tool input for admission classification and execution. */
+function toolInput(ctx: Context, config: DagNodeConfig, signal: AbortSignal): ToolExecutionInput {
   if (config.tool === undefined) throw new Error(`dag node "${config.id}": kind=tool requires 'tool'`)
-  const scheduler = ctx.tools[TOOL_RUNTIME_SCHEDULER]
-  const exec = {
+  return {
     callId: ToolCallId(`ooo-${config.id}`),
     name: config.tool,
     arguments: config.arguments,
     agent: ctx.agents.requireInitiator(),
     signal,
   }
+}
+
+/** Execute one TOOL node through the real tool runtime pipeline. */
+async function runToolNode(ctx: Context, config: DagNodeConfig, signal: AbortSignal): Promise<string> {
+  const scheduler = ctx.tools[TOOL_RUNTIME_SCHEDULER]
+  const exec = toolInput(ctx, config, signal)
   const prepared = await scheduler.prepare(exec)
   signal.throwIfAborted()
   // finalize/finish take the prepared run context, not the caller's input.
@@ -115,6 +120,9 @@ async function runToolNode(ctx: Context, config: DagNodeConfig, signal: AbortSig
   const settled = needsPost
     ? await scheduler.finalize(runExec, result)
     : scheduler.finish(runExec, result)
+  if (settled.isError) {
+    throw new Error(`dag node "${config.id}": tool failed: ${settled.error.message}`, { cause: settled.error })
+  }
   return settled.content
     .flatMap(block => block.type === 'text' ? [block.text] : [])
     .join('\n')
@@ -152,12 +160,15 @@ async function runReasonNode(
   })
   let output = ''
   const toolCalls: SpawnedCall[] = []
+  let finished = false
   for await (const chunk of stream) {
     signal.throwIfAborted()
-    // An adapter-level failure (auth, transport, route) must fail the node —
-    // swallowing it would report an empty analysis as a finished one.
-    if (chunk.type === 'finish' && chunk.reason.kind === 'error') {
-      throw new Error(`dag node "${config.id}": model request failed: ${chunk.reason.failure.message}`)
+    if (finished) throw new Error(`dag node "${config.id}": chunk after finish`)
+    if (chunk.type === 'finish') {
+      if (chunk.reason.kind !== 'stop' && chunk.reason.kind !== 'tool-calls') {
+        throw new Error(`dag node "${config.id}": unsuccessful model finish (${chunk.reason.kind})`, { cause: chunk.reason })
+      }
+      finished = true
     }
     if (chunk.type !== 'block-end') continue
     if (chunk.block.type === 'text') output += chunk.block.text
@@ -165,6 +176,8 @@ async function runReasonNode(
       toolCalls.push({ id: chunk.block.id, name: chunk.block.name, arguments: chunk.block.arguments })
     }
   }
+  signal.throwIfAborted()
+  if (!finished) throw new Error(`dag node "${config.id}": missing model finish`)
   return toolCalls.length > 0 ? { text: output, toolCalls } : { text: output }
 }
 
@@ -185,6 +198,8 @@ export async function runDagTurn(options: {
   provider: string
   model: string
   signal: AbortSignal
+  /** Host tool concurrency limit; defaults to the scheduler limit for direct callers. */
+  maxParallelTools?: number
 }): Promise<DagTraceFile> {
   const { ctx, dag, signal } = options
   const route = { provider: options.provider, model: options.model }
@@ -217,12 +232,21 @@ export async function runDagTurn(options: {
       const nodes: OooNode<NodeResult>[] = []
       const toolIds: string[] = []
       calls.forEach((call, index) => {
+        if (!reasonTools.some(tool => tool.name === call.name)) {
+          throw new Error(`dag node "${parent.id}": tool ${call.name} is not allowed`)
+        }
         const id = `${parent.id}-call-${index}`
-        let args: Record<string, unknown> = {}
+        let parsed: unknown
         try {
-          const parsed: unknown = JSON.parse(call.arguments || '{}')
-          if (typeof parsed === 'object' && parsed !== null) args = parsed as Record<string, unknown>
-        } catch { /* malformed model JSON degrades to no arguments */ }
+          parsed = JSON.parse(call.arguments || '{}')
+        } catch (error) {
+          throw new Error(`dag node "${parent.id}": invalid arguments for ${call.name}`, { cause: error })
+        }
+        const validated = z.record(z.string(), z.unknown()).safeParse(parsed)
+        if (!validated.success) {
+          throw new Error(`dag node "${parent.id}": arguments for ${call.name} must be an object`)
+        }
+        const args = validated.data
         const config: DagNodeConfig = {
           id,
           name: `${parent.name}→${call.name}`,
@@ -298,6 +322,10 @@ export async function runDagTurn(options: {
       return await runReasonNode(ctx, config, deps, route, signal, reasonTools)
     },
     runTool: async (node) => ({ text: await runToolNode(ctx, resolveConfig(node.id), signal) }),
+  }, {
+    signal,
+    ...(options.maxParallelTools === undefined ? {} : { maxParallelTools: options.maxParallelTools }),
+    toolMode: node => ctx.tools.executionMode(toolInput(ctx, resolveConfig(node.id), signal)).kind,
   })
   const endedAt = Date.now()
 
@@ -318,5 +346,6 @@ export async function runDagTurn(options: {
     results,
   }
   await writeFile(dag.tracePath, `${JSON.stringify(trace, null, 2)}\n`, 'utf8')
+  signal.throwIfAborted()
   return trace
 }
