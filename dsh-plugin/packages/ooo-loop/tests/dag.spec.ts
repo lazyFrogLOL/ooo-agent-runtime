@@ -131,6 +131,23 @@ describe('DAG execution', () => {
     await expect(f.run([initialTool, reason])).rejects.toThrow(/arguments/)
     expect(f.dispatch).toHaveBeenCalledTimes(1)
   })
+  it('rejects empty model arguments without dispatching a spawned tool', async () => {
+    const f = await fixture({ calls: [{ name: 'allowed', arguments: '' }] })
+    await expect(f.run([initialTool, reason])).rejects.toThrow(/invalid arguments/)
+    expect(f.prepare).toHaveBeenCalledTimes(1)
+    expect(f.dispatch).toHaveBeenCalledTimes(1)
+    expect(f.stream).toHaveBeenCalledTimes(1)
+  })
+
+  it('accepts an explicit empty JSON object for a spawned tool', async () => {
+    const f = await fixture({ calls: [{ name: 'allowed', arguments: '{}' }] })
+    const trace = await f.run([initialTool, reason])
+    expect(f.prepare).toHaveBeenCalledTimes(2)
+    expect(f.prepare.mock.calls[1]?.[0]).toMatchObject({ arguments: {} })
+    expect(f.dispatch).toHaveBeenCalledTimes(2)
+    expect(trace.traces.map(node => node.id)).toEqual(['input', 'reason', 'reason-call-0', 'reason-cont'])
+  })
+
   it('rejects malformed model arguments without dispatching an empty argument call', async () => {
     const f = await fixture({ calls: [{ name: 'allowed', arguments: '{broken' }] })
     await expect(f.run([initialTool, reason])).rejects.toThrow(/arguments/)

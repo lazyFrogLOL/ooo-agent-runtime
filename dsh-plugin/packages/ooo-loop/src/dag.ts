@@ -238,7 +238,7 @@ export async function runDagTurn(options: {
         const id = `${parent.id}-call-${index}`
         let parsed: unknown
         try {
-          parsed = JSON.parse(call.arguments || '{}')
+          parsed = JSON.parse(call.arguments)
         } catch (error) {
           throw new Error(`dag node "${parent.id}": invalid arguments for ${call.name}`, { cause: error })
         }

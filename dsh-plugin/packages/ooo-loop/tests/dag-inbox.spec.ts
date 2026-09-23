@@ -20,7 +20,7 @@ const input = (text: string) => createUserMessage({
   content: [{ type: 'text', text }], source: { kind: 'user' },
 })
 
-async function harness(adapter = new MockAdapter([textResponse('DAG done')])) {
+async function harness(adapter = new MockAdapter([textResponse('DAG done')]), useDag = true) {
   const dir = await mkdtemp(join(tmpdir(), 'dag-inbox-'))
   cleanups.push(() => rm(dir, { recursive: true, force: true }))
   const ctx = new Context()
@@ -31,10 +31,10 @@ async function harness(adapter = new MockAdapter([textResponse('DAG done')])) {
   const id = SessionId('dag-inbox')
   const session = Session.create(id)
   ctx.effect(() => ctx.sessions.enter(session))
-  const agent = new ReactLoopAgent(loop.ctx, id, { provider: 'mock', model: 'mock' }, session, {
+  const agent = new ReactLoopAgent(loop.ctx, id, { provider: 'mock', model: 'mock' }, session, useDag ? {
     tracePath: join(dir, 'trace.json'),
     nodes: [{ id: 'reason', name: 'configured task', kind: 'reason', prompt: 'configured task', arguments: {}, dependsOn: [] }],
-  })
+  } : undefined)
   cleanups.push(async () => {
     agent.cancel({ kind: 'disposed' })
     await agent.whenIdle()
@@ -50,6 +50,51 @@ function loggedInputs(session: Session) {
 }
 
 describe('DAG turn inbox ownership', () => {
+  it.each([
+    { useDag: true, explicitWake: false },
+    { useDag: false, explicitWake: false },
+    { useDag: true, explicitWake: true },
+    { useDag: false, explicitWake: true },
+  ])('exits the cancelled driver after a turn-end observer (DAG=$useDag, explicitWake=$explicitWake)', async ({ useDag, explicitWake }) => {
+    const retained = input('retained followup')
+    const wake = input('explicit wake after cancel')
+    const adapter = new MockAdapter([
+      () => {
+        agent.followup(retained)
+        return textResponse('first turn done')
+      },
+      textResponse('retained followup done'),
+      textResponse('explicit wake done'),
+    ])
+    const { ctx, agent, session, errors } = await harness(adapter, useDag)
+    const statuses: string[] = []
+    const claimed: { id: string; turn: number }[] = []
+    ctx.on('agent/status', ({ status }) => { statuses.push(status) })
+    ctx.on('agent/inbox/claimed', ({ message, turn }) => { claimed.push({ id: message.id, turn }) })
+    ctx.on('session/event', (_session, event) => {
+      if (event.type !== 'turn/end' || event.data.turn !== 1) return
+      agent.cancel({ kind: 'user' }, { keepInbox: true })
+      // Session publication forbids reentrant appends. Wake at its first microtask boundary,
+      // before the cancelled driver's convergence, so the wake must be latched for replay.
+      if (explicitWake) queueMicrotask(() => agent.followup(wake))
+    })
+    const trigger = input('start first turn')
+    agent.followup(trigger)
+    await agent.whenIdle()
+
+    expect(errors).toEqual([])
+    expect(statuses).toEqual(explicitWake ? ['running', 'idle', 'running', 'idle'] : ['running', 'idle'])
+    expect(adapter.requests).toHaveLength(explicitWake ? 3 : 1)
+    expect(agent.inbox.nextTurn).toEqual(explicitWake ? [] : [retained])
+    expect(loggedInputs(session)).toEqual(explicitWake ? [trigger, retained, wake] : [trigger])
+    expect(claimed).toEqual(explicitWake ? [
+      { id: trigger.id, turn: 1 }, { id: retained.id, turn: 2 }, { id: wake.id, turn: 3 },
+    ] : [{ id: trigger.id, turn: 1 }])
+    expect(session.snapshotEvents().filter(event => event.type === 'turn/end').map(event => event.data))
+      .toEqual((explicitWake ? [1, 2, 3] : [1]).map(turn => ({ turn, reason: { kind: 'completed' } })))
+    expect(agent.status).toBe('idle')
+  })
+
   it('does not run the configured graph when its waking input was removed', async () => {
     const { ctx, agent, session, adapter } = await harness()
     const trigger = input('withdrawn trigger')

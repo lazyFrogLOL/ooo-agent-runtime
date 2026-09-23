@@ -378,6 +378,8 @@ export class ReactLoopAgent implements Agent {
         this.throwError(error)
       }
     }
+    // A turn-end observer may cancel synchronously; let the driver replay only an explicit new wake.
+    signal.throwIfAborted()
     if (!this.inbox.hasPending) return false
     phase.abort = new AbortController()
     // A fresh controller makes a latch set on the old one stale: the live driver claims the queue itself.
