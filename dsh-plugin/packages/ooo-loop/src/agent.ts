@@ -20,6 +20,7 @@ import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall } from '@
 import {
   LlmError,
   createAssistantMessage,
+  createUserMessage,
   errorChain,
   markAgentLoopRequest,
 } from '@deepseek-ai/dsh-llm'
@@ -38,6 +39,7 @@ import { AssistantStreamAttempt } from './assistant-stream.ts'
 import { SystemPromptProjection } from './runtime-context.ts'
 import { executeToolCalls } from './tool-calls.ts'
 import { runDagTurn, type DagConfig } from './dag.ts'
+import { WaitWork, captureWaitWorkSnapshot, parseWaitWorkProposal } from './wait-work.ts'
 
 type Phase =
   | { kind: 'idle'; lastTurn: number }
@@ -90,6 +92,9 @@ export class ReactLoopAgent implements Agent {
   /** Process-local revision of assistant frames for this attached Session. */
   private assistantStreamRevision = 0
   private assistantAttemptCounter = 0
+  private waitWorkRevision = 0
+  private activeWaitWork: WaitWork | undefined
+  private waitWorkCalls = 0
   private readonly systemPrompt: SystemPromptProjection
   /** Identities fully frozen by this loop; weak references do not retain replaced history. */
   private readonly frozenMessages = new WeakSet<Message>()
@@ -115,6 +120,14 @@ export class ReactLoopAgent implements Agent {
     this.phase = { kind: 'idle', lastTurn }
     this.runtimeContext = new RuntimeContextProjection(this.ctx, session)
     this.systemPrompt = new SystemPromptProjection(session)
+    if (loopCtx.agentLoop.config.waitWork !== undefined) {
+      // Scope-owned subscription to the original session: never append while observing it.
+      this.ctx.on('session/event', (subject, event) => {
+        if (subject.id !== session.id || event.type !== 'agent/inbox/spliced') return
+        this.waitWorkRevision++
+        this.activeWaitWork?.invalidate('stale')
+      })
+    }
   }
 
   get status(): AgentStatus {
@@ -287,6 +300,7 @@ export class ReactLoopAgent implements Agent {
       this.throwError(error)
     }
     phase.turn = turn
+    this.waitWorkCalls = 0
     let turnEnds: TurnEndReason | null = null
     let target: InboxTarget = 'next-turn'
     try {
@@ -337,15 +351,28 @@ export class ReactLoopAgent implements Agent {
           signal.throwIfAborted()
           this.session.append('step/start', { turn, step })
           phase.step = step
+          let pendingWait: { work: WaitWork; revision: number } | undefined
           try {
-            // max-tokens is sticky: once any step hits the ceiling, later steps
-            // that complete normally must not downgrade the turn outcome.
-            const stepEnd = await this.step(decision)
-            // max-tokens stays sticky: a later completed step must not
-            // downgrade the turn outcome.
-            if (turnEnds === null || turnEnds.kind !== 'max-tokens') turnEnds = stepEnd
-          } finally {
-            this.session.append('step/end', { turn, step })
+            try {
+              const stepEnd = await this.step(decision, (work, revision) => { pendingWait = { work, revision } })
+              // max-tokens stays sticky: a later completed step must not downgrade it.
+              if (turnEnds === null || turnEnds.kind !== 'max-tokens') turnEnds = stepEnd
+            } finally {
+              this.session.append('step/end', { turn, step })
+            }
+          } catch (error) {
+            pendingWait?.work.settle(signal.aborted ? 'cancelled' : 'tools-failed')
+            throw error
+          }
+          if (pendingWait !== undefined) {
+            const { work, revision } = pendingWait
+            const draft = work.settle(signal.aborted ? 'cancelled' : revision !== this.waitWorkRevision ? 'stale' : undefined)
+            if (turnEnds === null && !signal.aborted && revision === this.waitWorkRevision && draft !== undefined) {
+              this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [createUserMessage({
+                source: { kind: 'plugin', plugin: 'ooo-wait-work' },
+                content: [{ type: 'text', text: `Unverified wait-work draft (not a tool result; verify before relying on it):\n${draft}` }],
+              })])
+            }
           }
           signal.throwIfAborted()
           if (turnEnds && this.inbox.nextStep.length === 0) {
@@ -388,7 +415,10 @@ export class ReactLoopAgent implements Agent {
     return true
   }
 
-  private async step(decision: Extract<PreparedStep, { kind: 'enter' }>): Promise<StepEndReason | null> {
+  private async step(
+    decision: Extract<PreparedStep, { kind: 'enter' }>,
+    deferWaitWork: (work: WaitWork, revision: number) => void,
+  ): Promise<StepEndReason | null> {
     /* v8 ignore next -- private callers establish the running phase before executing a step */
     if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": step outside running phase`)
     const { turn, step, abort: { signal } } = this.phase
@@ -416,6 +446,9 @@ export class ReactLoopAgent implements Agent {
       }
       firstAttempt = false
       const request = this.buildRequest(config, preparedCall, assembly.tools, startsRequestSeries, signal)
+      const waitConfig = this.loopCtx.agentLoop.config.waitWork
+      const waitSnapshot = waitConfig === undefined ? undefined : captureWaitWorkSnapshot(request.messages, waitConfig.maxSnapshotChars)
+      const waitRevision = this.waitWorkRevision
       const live = new AssistantStreamAttempt(
         this.session.id,
         ++this.assistantAttemptCounter,
@@ -524,11 +557,36 @@ export class ReactLoopAgent implements Agent {
 
         const toolCalls = message.content.filter(block => block.type === 'tool-call')
         if (toolCalls.length === 0) return { kind: 'completed' }
-        const { concluded } = await executeToolCalls(
-          this.loopCtx, turn, step, toolCalls, signal,
-          context => this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [context]),
-        )
-        return concluded ? { kind: 'completed' } : null
+        const task = waitConfig === undefined ? undefined : parseWaitWorkProposal(message)
+        const work = task !== undefined && waitConfig !== undefined && waitSnapshot !== undefined && waitRevision === this.waitWorkRevision
+          ? new WaitWork({
+              ctx: this.loopCtx, agent: this, turn, step, signal,
+              config: waitConfig, admittedConfig: config, snapshot: waitSnapshot, task,
+              reserve: () => {
+                if (this.waitWorkCalls >= waitConfig.maxCallsPerTurn) return false
+                this.waitWorkCalls++
+                return true
+              },
+            })
+          : undefined
+        this.activeWaitWork = work
+        try {
+          const { concluded } = await executeToolCalls(
+            this.loopCtx, turn, step, toolCalls, signal,
+            context => this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [context]),
+            work,
+          )
+          if (work !== undefined) {
+            if (concluded) work.settle('tools-failed')
+            else deferWaitWork(work, waitRevision)
+          }
+          return concluded ? { kind: 'completed' } : null
+        } catch (error) {
+          work?.settle(signal.aborted ? 'cancelled' : 'tools-failed')
+          throw error
+        } finally {
+          this.activeWaitWork = undefined
+        }
       } catch (error: unknown) {
         if (!live.ended) live.abandon()
         throw error

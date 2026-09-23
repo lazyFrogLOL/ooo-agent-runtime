@@ -9,6 +9,12 @@ English | [中文](README.zh.md)
 
 An experimental replacement for the `agentLoop` provider, forked from DeepSeek Harness `0d1f50007f`. Mount this package **instead of**, not alongside, `dsh-agent-loop`. Without `dag`, the inherited conversational loop runs normally.
 
+## Tool-wait preparation (opt-in)
+
+Without `dag`, optional `waitWork` lets one text-only, tool-free preparation request overlap a real parallel-safe tool dispatch. The main model proposes the work alongside its tool call; no proposal means no auxiliary request. It uses existing text evidence, not predicted tool results. Closing the window revokes late-result adoption without waiting for the provider; an uncooperative request retains its background slot until it actually exits.
+
+See the [mechanism, configuration and reproducible Loader comparison](../../../docs/等待窗口工作机制.md). `wait-work-loader.spec.ts` verifies the real YAML/Loader/ordinary-loop path with deterministic external services. It is not a live-model speedup claim. Omitting `waitWork` preserves the default behavior.
+
 ## Configured DAG mode
 
 With `dag`, turn 1 executes the configured graph. Its waking input is claimed and logged once; it triggers the configured task, **not** a natural-language planner. A removed waking input does not execute a graph. Followups and steering queued during the graph are consumed by subsequent ordinary turns, not applied to an in-flight DAG branch.

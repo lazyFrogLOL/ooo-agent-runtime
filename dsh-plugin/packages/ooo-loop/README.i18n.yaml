@@ -1,4 +1,4 @@
 # Bilingual-pair consistency record: git blob hashes of the reviewed pair.
 # Re-record after updating both README files.
-README.md: dca47b72cec18cb64882e7313c16b246292843e7
-README.zh.md: e74ebc7c111c84043818573768c85f6706d77436
+README.md: b6084b5f0189480449a3574649f8551ff154912b
+README.zh.md: 4de3b2dac6e90dfa34cea0cb2d89d072f09c5188

@@ -34,6 +34,7 @@ import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session
 import { ReactLoopAgent } from './agent.ts'
 import { DEFAULT_MAX_PARALLEL_TOOL_CALLS } from './constants.ts'
 import { DAG_CONFIG_SCHEMA, type DagConfig } from './dag.ts'
+import { WAIT_WORK_CONFIG_SCHEMA, WAIT_WORK_PROMPT, type WaitWorkConfig } from './wait-work.ts'
 
 /** Fiber states that cannot own or serve a new lifecycle. */
 const INACTIVE_STATES: ReadonlySet<FiberState> = new Set([
@@ -331,6 +332,8 @@ export interface Config {
    * families never mix.
    */
   dag?: unknown
+  /** Optional text-only speculative work during ordinary parallel-tool waits; absent means off. */
+  waitWork?: unknown
   /** Agents created or resumed at plugin startup. */
   agents: (AgentOptions & {
     /** Stable config label used in logs and as the fresh combined-id prefix. */
@@ -345,7 +348,7 @@ export interface Config {
 }
 
 /** Agent-loop configuration after defaults and load-time validation. */
-type ResolvedConfig = Config & { maxParallelToolCalls: number, dag?: DagConfig | undefined }
+type ResolvedConfig = Omit<Config, 'waitWork'> & { maxParallelToolCalls: number, dag?: DagConfig | undefined, waitWork?: WaitWorkConfig }
 
 /** Reject self-contained identity conflicts before any configured agent starts. */
 function validateConfiguredAgents(agents: Config['agents']): void {
@@ -375,6 +378,7 @@ export class AgentLoop extends Service implements AgentFactory {
     // The DAG shape is owned by dag.ts's zod schema (see Config.dag); here it
     // only needs to survive schemastery validation untouched.
     dag: z.any(),
+    waitWork: z.any(),
     agents: z.array(z.object({
       id: z.string().required(),
       sessionId: z.string().min(1),
@@ -400,11 +404,13 @@ export class AgentLoop extends Service implements AgentFactory {
       maxParallelToolCalls: resolveMaxParallelToolCalls(config.maxParallelToolCalls),
     }
     let source: () => AgentLoopSettings = () => entry
+    const { waitWork, ...baseConfig } = config
     this.config = {
-      ...config,
+      ...baseConfig,
       // zod owns DAG validation; a bad DAG fails the constructor before any
       // agent or projection is registered.
       dag: config.dag === undefined ? undefined : DAG_CONFIG_SCHEMA.parse(config.dag),
+      ...waitWork === undefined ? {} : { waitWork: WAIT_WORK_CONFIG_SCHEMA.parse(waitWork) },
       agents: applyLauncherIdentities(config.agents, ctx.get(CONFIGURED_AGENT_IDENTITIES_KEY)),
       // Read through on every scheduler decision: `tool-calls.ts` destructures
       // this at the start of each group, so a committed change caps the next
@@ -437,6 +443,9 @@ export class AgentLoop extends Service implements AgentFactory {
     ctx.systemPrompt.variable('provider', context => context.agent?.options.provider)
     ctx.systemPrompt.variable('model', context => context.agent?.options.model)
     ctx.systemPrompt.variable('cwd', context => context.agent?.session.header.cwd)
+    if (this.config.waitWork !== undefined) {
+      ctx.systemPrompt.section({ name: 'ooo:wait-work', order: 900, text: WAIT_WORK_PROMPT })
+    }
 
     for (const { id, sessionId, cwd, resumeSessionId, ...options } of this.config.agents) {
       const meta = cwd === undefined ? {} : { cwd }

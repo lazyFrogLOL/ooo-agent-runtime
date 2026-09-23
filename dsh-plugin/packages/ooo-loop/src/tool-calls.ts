@@ -17,6 +17,19 @@ import type { Session, SessionSeq, UserMessage } from '@deepseek-ai/dsh-session'
 import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type ToolExecutionInput, type ToolExecutionMode, type ToolExecutionResult, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 
+/** Optional optimization observer; callback exceptions are isolated from execution. */
+export interface ToolWaitObserver {
+  /**
+   * Actual parallel scheduler dispatches, from invocation through settlement.
+   * Excludes prepare, finalize, ordered commit, and exclusive calls. Zero is
+   * reported in the last dispatch's settlement path, with a final zero on exit
+   * if no dispatch ran. No notifications follow executeToolCalls settlement.
+   */
+  dispatchesChanged(activeParallel: number): void
+  /** Once per batch, on cancellation, structured tool error, or scheduler failure. */
+  invalidated(): void
+}
+
 /** One tool call after argument parsing, ready to schedule. */
 interface PlannedCall {
   block: ToolCallBlock
@@ -56,6 +69,7 @@ interface GroupOutcome {
  * @param toolCalls - assistant calls in model order.
  * @param signal - abort signal shared by the step.
  * @param acceptContext - accepts committed result context for the next step boundary.
+ * @param observer - optional synchronous observer of parallel dispatch waits and invalidation.
  */
 export async function executeToolCalls(
   ctx: Context,
@@ -64,41 +78,78 @@ export async function executeToolCalls(
   toolCalls: ToolCallBlock[],
   signal: AbortSignal,
   acceptContext: (context: UserMessage) => void,
+  observer?: ToolWaitObserver,
 ): Promise<{ concluded: boolean }> {
-  const agent = ctx.agents.requireInitiator()
-  const { session } = agent
+  let activeParallel = 0
+  let reportedDispatches = false
+  let closed = false
+  let invalid = false
+  const invalidate = (): void => {
+    if (closed || invalid) return
+    invalid = true
+    notifyObserver(() => observer?.invalidated())
+  }
+  const dispatchChanged = (delta: number): void => {
+    if (closed) return
+    activeParallel += delta
+    reportedDispatches = true
+    notifyObserver(() => observer?.dispatchesChanged(activeParallel))
+  }
+  try {
+    if (observer) {
+      signal.addEventListener('abort', invalidate, { once: true })
+      if (signal.aborted) invalidate()
+    }
+    const agent = ctx.agents.requireInitiator()
+    const { session } = agent
 
-  // Inputs are distinct because tools/execute wrappers may replace `exec.signal`.
-  const planned: PlannedCall[] = toolCalls.map(block => ({
-    block,
-    exec: {
-      callId: block.id,
-      name: block.name,
-      arguments: parseArguments(block.arguments),
-      agent,
-      signal,
-    },
-  }))
+    // Inputs are distinct because tools/execute wrappers may replace `exec.signal`.
+    const planned: PlannedCall[] = toolCalls.map(block => ({
+      block,
+      exec: {
+        callId: block.id,
+        name: block.name,
+        arguments: parseArguments(block.arguments),
+        agent,
+        signal,
+      },
+    }))
 
-  let next = 0
-  let concluded = false
-  while (next < planned.length) {
-    // Commit before classifying again so registry changes affect unstarted calls.
-    // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded by the loop condition
-    const first = planned[next]!
-    const mode = ctx.tools.executionMode(first.exec).kind
-    const group = mode === 'parallel' ? planned.slice(next) : [first]
-    const outcome = await runGroup(
-      ctx, turn, step, group, mode, signal, acceptContext,
-    )
-    next += outcome.consumed
-    concluded ||= outcome.concluded
-    if (outcome.aborted) {
-      for (const call of planned.slice(next)) appendSkippedToolCall(session, turn, step, call.block)
-      return { concluded }
+    let next = 0
+    let concluded = false
+    while (next < planned.length) {
+      // Commit before classifying again so registry changes affect unstarted calls.
+      // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded by the loop condition
+      const first = planned[next]!
+      const mode = ctx.tools.executionMode(first.exec).kind
+      const group = mode === 'parallel' ? planned.slice(next) : [first]
+      const outcome = await runGroup(
+        ctx, turn, step, group, mode, signal, acceptContext, dispatchChanged, invalidate,
+      )
+      next += outcome.consumed
+      concluded ||= outcome.concluded
+      if (outcome.aborted) {
+        for (const call of planned.slice(next)) appendSkippedToolCall(session, turn, step, call.block)
+        return { concluded }
+      }
+    }
+    return { concluded }
+  } catch (error: unknown) {
+    invalidate()
+    throw error
+  } finally {
+    closed = true
+    if (observer) signal.removeEventListener('abort', invalidate)
+    if (!reportedDispatches || activeParallel !== 0) {
+      activeParallel = 0
+      notifyObserver(() => observer?.dispatchesChanged(0))
     }
   }
-  return { concluded }
+}
+
+/** Optimization observers must never affect scheduling, tool results, or errors. */
+function notifyObserver(notify: () => void): void {
+  try { notify() } catch { /* Ignore failures in optional side-work observation. */ }
 }
 
 /** Parse model arguments, preserving invalid JSON as text and mapping empty input to `{}`. */
@@ -127,6 +178,8 @@ async function runGroup(
   mode: ToolExecutionMode['kind'],
   signal: AbortSignal,
   acceptContext: (context: UserMessage) => void,
+  dispatchChanged: (delta: number) => void,
+  invalidate: () => void,
 ): Promise<GroupOutcome> {
   const { session } = ctx.agents.requireInitiator()
   const { maxParallelToolCalls } = ctx.agentLoop.config
@@ -152,6 +205,7 @@ async function runGroup(
       const result = slot.needsPost
         ? await ctx.tools[TOOL_RUNTIME_SCHEDULER].finalize(slot.exec, slot.result)
         : ctx.tools[TOOL_RUNTIME_SCHEDULER].finish(slot.exec, slot.result)
+      if (result.isError) invalidate()
       // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded index
       appendToolResult(session, turn, step, call!.block, result, callSeqs[committed]!)
       for (const context of result.additionalContexts ?? []) acceptContext(context)
@@ -171,12 +225,28 @@ async function runGroup(
     throwSchedulerFailure()
     switch (prepared.kind) {
       case 'dispatch': {
-        const promise = ctx.tools[TOOL_RUNTIME_SCHEDULER].dispatch(prepared.exec).then(
+        if (mode === 'parallel') dispatchChanged(1)
+        const scheduler = ctx.tools[TOOL_RUNTIME_SCHEDULER]
+        let dispatched: ReturnType<typeof scheduler.dispatch>
+        try {
+          dispatched = scheduler.dispatch(prepared.exec)
+        } catch (error: unknown) {
+          invalidate()
+          if (mode === 'parallel') dispatchChanged(-1)
+          throw error
+        }
+        // Notify in these existing settlement handlers, not in ordered commit
+        // or an extra promise continuation: a slow earlier slot must not hide zero.
+        const promise = dispatched.then(
           (outcome) => {
+            if (outcome.result.isError) invalidate()
+            if (mode === 'parallel') dispatchChanged(-1)
             slots[index] = { exec: prepared.exec, result: outcome.result, needsPost: outcome.kind === 'post-result' }
             return index
           },
           (error: unknown) => {
+            invalidate()
+            if (mode === 'parallel') dispatchChanged(-1)
             schedulerFailure ??= { error }
             return index
           },
@@ -185,9 +255,11 @@ async function runGroup(
         break
       }
       case 'post-result':
+        if (prepared.result.isError) invalidate()
         slots[index] = { exec: prepared.exec, result: prepared.result, needsPost: true }
         break
       case 'final-result':
+        if (prepared.result.isError) invalidate()
         slots[index] = { exec: prepared.exec, result: prepared.result, needsPost: false }
         break
       /* v8 ignore next -- closed-union exhaustiveness guard */
@@ -230,6 +302,7 @@ async function runGroup(
       await fillPool()
     }
   } catch (error: unknown) {
+    invalidate()
     schedulerFailure ??= { error }
     await Promise.allSettled(inFlight.values())
     throw schedulerFailure.error

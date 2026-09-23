@@ -177,7 +177,7 @@ index cdf7dd2877..578dfa6bb2 100644
        '@types/react':
          specifier: ~18.3.1
          version: 18.3.31
-@@ -6222,6 +6222,77 @@ importers:
+@@ -6222,6 +6222,83 @@ importers:
          specifier: ^4.19.2
          version: 4.22.4
  
@@ -199,6 +199,12 @@ index cdf7dd2877..578dfa6bb2 100644
 +      '@deepseek-ai/cordis':
 +        specifier: workspace:^
 +        version: link:../../../vendor/cordis
++      '@deepseek-ai/cordis-plugin-include':
++        specifier: workspace:^
++        version: link:../../../vendor/include
++      '@deepseek-ai/cordis-plugin-loader':
++        specifier: workspace:^
++        version: link:../../../vendor/loader
 +      '@deepseek-ai/dsh-agent':
 +        specifier: workspace:^
 +        version: link:../../core/agent
